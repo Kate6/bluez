@@ -70,6 +70,9 @@ struct btd_opts btd_opts;
 static GKeyFile *main_conf;
 static char main_conf_file_path[PATH_MAX];
 
+// struct multi_btd_opts *multi_btd_opts;
+GList *multi_btd_opts_list;
+
 static const char *supported_options[] = {
 	"Name",
 	"Class",
@@ -384,7 +387,7 @@ static void check_config(GKeyFile *config)
 		bool match = false;
 
 		for (group = valid_groups; group && group->name ; group++) {
-			if (g_str_equal(keys[i], group->name)) {
+			if (g_str_has_prefix(keys[i], group->name)) {
 				match = true;
 				break;
 			}
@@ -728,7 +731,14 @@ static bool gen_sirk(const char *str)
 	return ret;
 }
 
-static void parse_config(GKeyFile *config)
+static gchar* get_device_specific_section_name( gchar* sectionName, gchar* macAddr ) {
+    if ( macAddr )
+        return g_strdup_printf( "%s-%s", sectionName, macAddr );
+    else
+        return g_strdup( sectionName );
+}
+
+static void parse_config_main(GKeyFile *config, gchar *macAddr)
 {
 	GError *err = NULL;
 	char *str, **strlist;
@@ -742,7 +752,9 @@ static void parse_config(GKeyFile *config)
 
 	DBG("parsing %s", main_conf_file_path);
 
-	val = g_key_file_get_integer(config, "General",
+	gchar* sectionName = get_device_specific_section_name( "General", macAddr );
+
+	val = g_key_file_get_integer(config, sectionName,
 						"DiscoverableTimeout", &err);
 	if (err) {
 		DBG("%s", err->message);
@@ -752,7 +764,7 @@ static void parse_config(GKeyFile *config)
 		btd_opts.discovto = val;
 	}
 
-	boolean = g_key_file_get_boolean(config, "General",
+	boolean = g_key_file_get_boolean(config, sectionName,
 						"AlwaysPairable", &err);
 	if (err) {
 		DBG("%s", err->message);
@@ -762,7 +774,7 @@ static void parse_config(GKeyFile *config)
 		btd_opts.pairable = boolean;
 	}
 
-	val = g_key_file_get_integer(config, "General",
+	val = g_key_file_get_integer(config, sectionName,
 						"PairableTimeout", &err);
 	if (err) {
 		DBG("%s", err->message);
@@ -772,7 +784,7 @@ static void parse_config(GKeyFile *config)
 		btd_opts.pairto = val;
 	}
 
-	str = g_key_file_get_string(config, "General", "Privacy", &err);
+	str = g_key_file_get_string(config, sectionName, "Privacy", &err);
 	if (err) {
 		DBG("%s", err->message);
 		g_clear_error(&err);
@@ -810,7 +822,7 @@ static void parse_config(GKeyFile *config)
 		g_free(str);
 	}
 
-	str = g_key_file_get_string(config, "General",
+	str = g_key_file_get_string(config, sectionName,
 						"JustWorksRepairing", &err);
 	if (err) {
 		DBG("%s", err->message);
@@ -822,7 +834,7 @@ static void parse_config(GKeyFile *config)
 		g_free(str);
 	}
 
-	val = g_key_file_get_integer(config, "General",
+	val = g_key_file_get_integer(config, sectionName,
 						"TemporaryTimeout", &err);
 	if (err) {
 		DBG("%s", err->message);
@@ -832,7 +844,7 @@ static void parse_config(GKeyFile *config)
 		btd_opts.tmpto = val;
 	}
 
-	str = g_key_file_get_string(config, "General", "Name", &err);
+	str = g_key_file_get_string(config, sectionName, "Name", &err);
 	if (err) {
 		DBG("%s", err->message);
 		g_clear_error(&err);
@@ -842,7 +854,7 @@ static void parse_config(GKeyFile *config)
 		btd_opts.name = str;
 	}
 
-	str = g_key_file_get_string(config, "General", "Class", &err);
+	str = g_key_file_get_string(config, sectionName, "Class", &err);
 	if (err) {
 		DBG("%s", err->message);
 		g_clear_error(&err);
@@ -852,7 +864,7 @@ static void parse_config(GKeyFile *config)
 		g_free(str);
 	}
 
-	str = g_key_file_get_string(config, "General", "DeviceID", &err);
+	str = g_key_file_get_string(config, sectionName, "DeviceID", &err);
 	if (err) {
 		DBG("%s", err->message);
 		g_clear_error(&err);
@@ -862,7 +874,7 @@ static void parse_config(GKeyFile *config)
 		g_free(str);
 	}
 
-	boolean = g_key_file_get_boolean(config, "General",
+	boolean = g_key_file_get_boolean(config, sectionName,
 						"ReverseServiceDiscovery", &err);
 	if (err) {
 		DBG("%s", err->message);
@@ -870,21 +882,21 @@ static void parse_config(GKeyFile *config)
 	} else
 		btd_opts.reverse_discovery = boolean;
 
-	boolean = g_key_file_get_boolean(config, "General",
+	boolean = g_key_file_get_boolean(config, sectionName,
 						"NameResolving", &err);
 	if (err)
 		g_clear_error(&err);
 	else
 		btd_opts.name_resolv = boolean;
 
-	boolean = g_key_file_get_boolean(config, "General",
+	boolean = g_key_file_get_boolean(config, sectionName,
 						"DebugKeys", &err);
 	if (err)
 		g_clear_error(&err);
 	else
 		btd_opts.debug_keys = boolean;
 
-	str = g_key_file_get_string(config, "General", "ControllerMode", &err);
+	str = g_key_file_get_string(config, sectionName, "ControllerMode", &err);
 	if (err) {
 		g_clear_error(&err);
 	} else {
@@ -893,7 +905,7 @@ static void parse_config(GKeyFile *config)
 		g_free(str);
 	}
 
-	val = g_key_file_get_integer(config, "General", "MaxControllers", &err);
+	val = g_key_file_get_integer(config, sectionName, "MaxControllers", &err);
 	if (err) {
 		g_clear_error(&err);
 	} else {
@@ -901,7 +913,7 @@ static void parse_config(GKeyFile *config)
 		btd_opts.max_adapters = val;
 	}
 
-	str = g_key_file_get_string(config, "General", "MultiProfile", &err);
+	str = g_key_file_get_string(config, sectionName, "MultiProfile", &err);
 	if (err) {
 		g_clear_error(&err);
 	} else {
@@ -917,28 +929,28 @@ static void parse_config(GKeyFile *config)
 		g_free(str);
 	}
 
-	boolean = g_key_file_get_boolean(config, "General",
+	boolean = g_key_file_get_boolean(config, sectionName,
 						"FastConnectable", &err);
 	if (err)
 		g_clear_error(&err);
 	else
 		btd_opts.fast_conn = boolean;
 
-	boolean = g_key_file_get_boolean(config, "General",
+	boolean = g_key_file_get_boolean(config, sectionName,
 						"RefreshDiscovery", &err);
 	if (err)
 		g_clear_error(&err);
 	else
 		btd_opts.refresh_discovery = boolean;
 
-	boolean = g_key_file_get_boolean(config, "General", "Experimental",
+	boolean = g_key_file_get_boolean(config, sectionName, "Experimental",
 						&err);
 	if (err)
 		g_clear_error(&err);
 	else
 		btd_opts.experimental = boolean;
 
-	strlist = g_key_file_get_string_list(config, "General",
+	strlist = g_key_file_get_string_list(config, sectionName,
 						"KernelExperimental",
 						NULL, &err);
 	if (err)
@@ -948,7 +960,7 @@ static void parse_config(GKeyFile *config)
 		g_strfreev(strlist);
 	}
 
-	val = g_key_file_get_integer(config, "General",
+	val = g_key_file_get_integer(config, sectionName,
 					"RemoteNameRequestRetryDelay", &err);
 	if (err) {
 		DBG("%s", err->message);
@@ -958,7 +970,7 @@ static void parse_config(GKeyFile *config)
 		btd_opts.name_request_retry_delay = val;
 	}
 
-	str = g_key_file_get_string(config, "General",
+	str = g_key_file_get_string(config, sectionName,
 						"SecureConnections", &err);
 	if (err)
 		g_clear_error(&err);
@@ -970,6 +982,8 @@ static void parse_config(GKeyFile *config)
 		else if (!strcmp(str, "only"))
 			btd_opts.secure_conn = SC_ONLY;
 	}
+
+	g_free( sectionName );
 
 	str = g_key_file_get_string(config, "GATT", "Cache", &err);
 	if (err) {
@@ -1113,6 +1127,63 @@ static void parse_config(GKeyFile *config)
 
 	parse_br_config(config);
 	parse_le_config(config);
+}
+
+/* original function prototype from before Kate's modifications */
+static void parse_config(GKeyFile *config)
+{
+    parse_config_main( config, NULL );
+}
+
+static int count_multi_adapter_sections(GKeyFile *config)
+{
+    gchar **groups_list = g_key_file_get_groups( config, NULL );
+    int i = 0;
+    int count = 0;
+    while ( groups_list[ i ] != NULL ) {
+        if ( g_str_has_prefix( groups_list[ i ], "General-" ) ) {
+            count++;
+        }
+        i++;
+    }
+    return count;
+}
+
+static void init_defaults(void);
+
+static void parse_config_multi_adapter(GKeyFile *config)
+{
+    gchar **groups_list = g_key_file_get_groups( config, NULL );
+    int i = 0;
+
+    // backup the content of the btd_opts struct
+    struct btd_opts btd_opts_backup;
+    memcpy( &btd_opts_backup, &btd_opts, sizeof( btd_opts ) );
+
+    while ( groups_list[ i ] != NULL ) {
+        if ( g_str_has_prefix( groups_list[ i ], "General-" ) ) {
+            gchar *adapterAddr = groups_list[ i ] + 8; // 8 = strlen( "General-" )
+            DBG("MultiGroup=%s", adapterAddr );
+
+            // re-init btd_opts struct and read this adapter's
+            // config into it
+            init_defaults();
+            parse_config_main( config, adapterAddr );
+
+            // copy into multi_btd_opts struct
+            struct multi_btd_opts *thisAdapter = g_malloc0( sizeof( struct multi_btd_opts ) );
+            memcpy( &( thisAdapter->btd_opts ), &btd_opts, sizeof( struct btd_opts ) );
+            bdaddr_t *addr = g_malloc0( sizeof( bdaddr_t ) );
+            str2ba( adapterAddr, addr );
+            thisAdapter->bdaddr = *addr;
+
+            multi_btd_opts_list = g_list_append( multi_btd_opts_list, thisAdapter );
+        }
+        i++;
+    }
+
+    // restore the contents of the btd_opts struct
+    memcpy( &btd_opts, &btd_opts_backup, sizeof( btd_opts ) );
 }
 
 static void init_defaults(void)
@@ -1374,6 +1445,8 @@ int main(int argc, char *argv[])
 
 	parse_config(main_conf);
 
+	parse_config_multi_adapter(main_conf);
+
 	if (connect_dbus() < 0) {
 		error("Unable to get on D-Bus");
 		exit(1);
@@ -1406,7 +1479,7 @@ int main(int argc, char *argv[])
 						btd_opts.did_version);
 	}
 
-	if (btd_opts.mps != MPS_OFF)
+    if (btd_opts.mps != MPS_OFF)
 		register_mps(btd_opts.mps == MPS_MULTIPLE);
 
 	/* Loading plugins has to be done after D-Bus has been setup since
@@ -1420,14 +1493,14 @@ int main(int argc, char *argv[])
 
 	rfkill_init();
 
-	DBG("Entering main loop");
+    DBG("Entering main loop");
 
 	mainloop_sd_notify("STATUS=Running");
 	mainloop_sd_notify("READY=1");
 
 	mainloop_run_with_signal(signal_callback, NULL);
 
-	mainloop_sd_notify("STATUS=Quitting");
+    mainloop_sd_notify("STATUS=Quitting");
 
 	plugin_cleanup();
 

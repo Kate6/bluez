@@ -153,7 +153,14 @@ struct btd_opts {
 	struct btd_csis csis;
 };
 
+struct multi_btd_opts {
+    bdaddr_t bdaddr;
+    struct btd_opts btd_opts;
+};
+
 extern struct btd_opts btd_opts;
+extern GList *multi_btd_opts_list;
+
 
 gboolean plugin_init(const char *enable, const char *disable);
 void plugin_cleanup(void);

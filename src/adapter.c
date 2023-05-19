@@ -565,6 +565,10 @@ static void store_adapter_info(struct btd_adapter *adapter)
 					"DiscoverableTimeout",
 					adapter->discoverable_timeout);
 
+	g_key_file_set_integer(key_file, "General",
+	        "Class",
+	        adapter->dev_class);
+
 	if (adapter->stored_alias)
 		g_key_file_set_string(key_file, "General", "Alias",
 							adapter->stored_alias);
@@ -6774,6 +6778,10 @@ static void load_config(struct btd_adapter *adapter)
 						"General", "Name", NULL);
 	}
 
+	/* Get class */
+	adapter->dev_class = g_key_file_get_integer(key_file, "General",
+	        "Class", NULL);
+
 	/* Get pairable timeout */
 	adapter->pairable_timeout = g_key_file_get_integer(key_file, "General",
 						"PairableTimeout", &gerr);
@@ -6820,16 +6828,17 @@ static struct btd_adapter *btd_adapter_new(uint16_t index)
 	if (blocked > 0)
 		adapter->power_state = ADAPTER_POWER_STATE_OFF_BLOCKED;
 
-	/*
-	 * Setup default configuration values. These are either adapter
-	 * defaults or from a system wide configuration file.
-	 *
-	 * Some value might be overwritten later on by adapter specific
-	 * configuration. This is to make sure that sane defaults are
-	 * always present.
-	 */
+
+        /*
+         * Setup default configuration values. These are either adapter
+         * defaults or from a system wide configuration file.
+         *
+         * Some value might be overwritten later on by adapter specific
+         * configuration. This is to make sure that sane defaults are
+         * always present.
+         */
 	adapter->system_name = g_strdup(btd_opts.name);
-	adapter->major_class = (btd_opts.class & 0x001f00) >> 8;
+    adapter->major_class = (btd_opts.class & 0x001f00) >> 8;
 	adapter->minor_class = (btd_opts.class & 0x0000fc) >> 2;
 	adapter->modalias = bt_modalias(btd_opts.did_source,
 						btd_opts.did_vendor,
@@ -10051,13 +10060,67 @@ static void read_exp_features(struct btd_adapter *adapter)
 	btd_error(adapter->dev_id, "Failed to read exp features info");
 }
 
-static void read_info_complete(uint8_t status, uint16_t length,
-					const void *param, void *user_data)
+static void read_info_complete_multi(uint8_t status, uint16_t length,
+                               const void *param, void *user_data);
+
+static bool btd_check_for_multi_config( struct btd_adapter *adapter )
+{
+    char addr1[18];
+    char addr2[18];
+    GList *itr;
+
+    ba2str( &adapter->bdaddr, addr2 );
+    DBG( "test addr %s", addr2 );
+
+    for (itr = g_list_first(multi_btd_opts_list); itr;
+         itr = g_list_next(multi_btd_opts_list)) {
+
+        struct multi_btd_opts *thisAdapter = itr->data;
+
+        ba2str( &thisAdapter->bdaddr, addr1 );
+        DBG( "multi addr %s", addr1 );
+
+        if ( !strcmp( addr1, addr2 ) ) {
+            DBG( "bang!" );
+
+            // backup the content of the btd_opts struct
+            struct btd_opts btd_opts_backup;
+            memcpy( &btd_opts_backup, &btd_opts, sizeof( btd_opts ) );
+
+            // overwrite with btd_opts from multi
+            memcpy( &btd_opts, &( thisAdapter->btd_opts ), sizeof( struct btd_opts ) );
+
+            DBG( "adapter name %s", btd_opts.name );
+            DBG( "class %x", btd_opts.class );
+
+            struct btd_adapter *newAdapter = btd_adapter_new( adapter->dev_id );
+            memcpy( adapter, newAdapter, sizeof( struct btd_adapter ) );
+            g_free( newAdapter );
+
+            // restore the contents of the btd_opts struct
+            memcpy( &btd_opts, &btd_opts_backup, sizeof( btd_opts ) );
+
+            if (mgmt_send(mgmt_primary, MGMT_OP_READ_INFO, adapter->dev_id, 0, NULL,
+                          read_info_complete_multi, adapter, NULL) > 0) {}
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void read_info_complete_main(uint8_t status, uint16_t length,
+					const void *param, void *user_data, bool haveMulti)
 {
 	struct btd_adapter *adapter = user_data;
 	const struct mgmt_rp_read_info *rp = param;
 	uint32_t missing_settings;
 	int err;
+
+    char addr[25];
+    ba2str( &rp->bdaddr, addr );
+    DBG( "(read_info_complete start) read adapter info: %s", addr );
 
 	DBG("index %u status 0x%02x", adapter->dev_id, status);
 
@@ -10119,6 +10182,13 @@ static void read_info_complete(uint8_t status, uint16_t length,
 		else
 			adapter->bdaddr_type = BDADDR_LE_PUBLIC;
 	}
+
+	if ( !haveMulti ) {
+        if ( btd_check_for_multi_config( adapter ) )
+            return;
+	}
+
+	kate_print_addresses( 13 );
 
 	missing_settings = adapter->current_settings ^
 						adapter->supported_settings;
@@ -10334,6 +10404,16 @@ failed:
 	btd_adapter_unref(adapter);
 }
 
+static void read_info_complete(uint8_t status, uint16_t length,
+                               const void *param, void *user_data) {
+    return read_info_complete_main( status, length, param, user_data, false);
+}
+
+static void read_info_complete_multi(uint8_t status, uint16_t length,
+                                     const void *param, void *user_data) {
+    return read_info_complete_main( status, length, param, user_data, true);
+}
+
 static void reset_adv_monitors_complete(uint8_t status, uint16_t length,
 					const void *param, void *user_data)
 {
@@ -10421,7 +10501,7 @@ static void index_added(uint16_t index, uint16_t length, const void *param,
 
 	if (mgmt_send(mgmt_primary, MGMT_OP_READ_INFO, index, 0, NULL,
 					read_info_complete, adapter, NULL) > 0)
-		return;
+        return;
 
 	btd_error(adapter->dev_id,
 			"Failed to read controller info for index %u", index);
@@ -10641,14 +10721,16 @@ int adapter_init(void)
 
 	DBG("sending read version command");
 
-	if (mgmt_send(mgmt_primary, MGMT_OP_READ_VERSION,
+	if (!mgmt_send(mgmt_primary, MGMT_OP_READ_VERSION,
 				MGMT_INDEX_NONE, 0, NULL,
-				read_version_complete, NULL, NULL) > 0)
-		return 0;
+				read_version_complete, NULL, NULL) > 0) {
 
-	error("Failed to read management version information");
+        error("Failed to read management version information");
 
-	return -EIO;
+        return -EIO;
+	}
+
+	return 0;
 }
 
 void adapter_cleanup(void)
@@ -10753,4 +10835,20 @@ bool btd_adapter_has_exp_feature(struct btd_adapter *adapter, uint32_t feature)
 	}
 
 	return false;
+}
+
+void kate_print_addresses( int bump ) {
+    GList *list;
+
+    DBG( "print_addresses( %d )", bump );
+
+    for (list = g_list_first(adapter_list); list;
+         list = g_list_next(list)) {
+
+        struct btd_adapter *adapter = list->data;
+
+        char addr[25];
+        ba2str( &adapter->bdaddr, addr );
+        DBG( "(print_addresses %d) read adapter info: %s", bump, addr );
+    }
 }
